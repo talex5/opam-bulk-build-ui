@@ -32,41 +32,26 @@ let opam_repo = Store.create opam_repo_config task
 let revs = Yojson.Basic.(
   from_file "revs.json"
   |> Util.to_list
-  |> List.map Util.to_string
+  |> List.map (fun json -> Util.to_string json |> Irmin.Hash.SHA1.of_hum)
   |> Array.of_list
 )
 
 let date_of_rev = Hashtbl.create (Array.length revs)
 
 type build_result = {
-  success : bool;
+  outcome : Status.outcome option;
   platform : string;
   build_commit : Irmin.Hash.SHA1.t;
   date : Unix.tm;
 }
 
-let successes =
-  let hash = Hashtbl.create 1000 in
-  Yojson.Basic.(
-    from_file "status.json"
-    |> Util.to_assoc
-    |> List.iter (fun (rev, rev_info) ->
-        Util.to_assoc rev_info
-        |> List.iter (fun (platform, platform_info) ->
-            platform_info
-            |> Util.member "ok"
-            |> Util.to_list
-            |> List.iter (fun pkg ->
-                let key = (Util.to_string pkg, rev) in
-                let successes =
-                  try Hashtbl.find hash key
-                  with Not_found -> [] in
-                Hashtbl.replace hash key (platform :: successes)
-            )
-       )
-    )
-  );
-  hash
+let format_date date =
+  Printf.sprintf "%04d-%02d-%02d %02d:%02d"
+    (date.Unix.tm_year + 1900)
+    (date.Unix.tm_mon + 1)
+    (date.Unix.tm_mday)
+    (date.Unix.tm_hour)
+    (date.Unix.tm_min)
 
 let platforms = [
   "local-centos-7-ocaml-4.02.1", "CentOS-7 / OCaml 4.02.1";
@@ -91,8 +76,8 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
 
   let count_failures ~rev pkg =
     try
-      let ok = Hashtbl.find successes (pkg, rev) |> List.length in
-      n_platforms - ok
+      let pkg_info = Status.pkg_info ~rev pkg in
+      n_platforms - pkg_info.Status.pass
     with Not_found -> n_platforms
 
   let view_package_list ~tags () =
@@ -160,21 +145,27 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
           history |> List.map (fun rev ->
             let any_failed =
               Array.fold_left (fun acc build ->
-                acc || build.success
+                acc || (build.outcome <> Some Status.Pass)
               ) false rev in
             let cl =
-              if rev.(i).success then "fullsuccess"
-              else if any_failed then "somesuccess"
-              else "allfail" in
+              match rev.(i).outcome with
+              | Some (Status.Pass) -> "fullsuccess"
+              | Some (Status.Fail) -> if any_failed then "somesuccess" else "allfail"
+              | None -> "unknown" in
             let href =
               Printf.sprintf "/pkg/%s/platform/%s/build/%s"
                 pkg
                 rev.(i).platform
                 (Irmin.Hash.SHA1.to_hum rev.(i).build_commit) in
             td ~a:[a_class [cl]] [
-              a ~a:[a_href href] [pcdata (
-                if rev.(i).success then "✔" else "✘"
-              )]
+              match rev.(i).outcome with
+              | None -> pcdata "-"
+              | Some outcome ->
+                  a ~a:[a_href href] [pcdata (
+                    match outcome with
+                    | Status.Pass -> "✔"
+                    | Status.Fail -> "✘"
+                  )]
             ]
           ) in
         let href = Printf.sprintf "/pkg/%s/platform/%s" pkg platform in
@@ -186,10 +177,9 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       table (header :: rows)
     ]
 
-  let view_build ~log ~actions ~buildtime ~info () =
+  let view_build ~log ~actions ~info () =
     let open Html5.M in
     [
-      p [pcdata (Printf.sprintf "Build time: %ss" buildtime)];
       pre [pcdata info];
       hr ();
       pre [pcdata actions];
@@ -233,13 +223,11 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
     !hashes |> Lwt_list.map_s (fun hash ->
 (*       Store.of_head config task hash >>= fun store -> *)
       Store.task_of_head store hash >>= fun task ->
-      let opam_rev = List.hd (Irmin.Task.messages task) |> String.trim in
-      let key = (pkg, opam_rev) in
-      Printf.printf "key = (%S, %S)\n%!" pkg opam_rev;
-      let ok = try Hashtbl.find successes key with Not_found -> [] in
+      let opam_rev = List.hd (Irmin.Task.messages task) |> String.trim |> Irmin.Hash.SHA1.of_hum in
       let date = Hashtbl.find date_of_rev opam_rev in
       platforms |> Array.map (fun (platform, _disp) ->
-        { platform; build_commit = hash; success = List.mem platform ok; date }
+        let outcome = Status.build_outcome ~rev:opam_rev ~platform pkg in
+        { platform; build_commit = hash; outcome; date }
       )
       |> Lwt.return
     )
@@ -248,12 +236,49 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
     get_package_history ~depth:20 pkg >>= fun history ->
     let header = view_package ~pkg ~history () in
     let store = store "get build details" in
+    Store.head store >>= function
+    | None -> assert false
+    | Some head ->
+    Store.task_of_head store head >>= fun task ->
+    let opam_rev_str = List.hd (Irmin.Task.messages task) |> String.trim in
+    let opam_rev = Irmin.Hash.SHA1.of_hum opam_rev_str in
+    let date = Hashtbl.find date_of_rev opam_rev in
     Store.read_exn store [platform; pkg; "log"] >>= fun log ->
     Store.read_exn store [platform; pkg; "actions"] >>= fun actions ->
     Store.read_exn store [platform; pkg; "buildtime"] >>= fun buildtime ->
     Store.read_exn store [platform; pkg; "info"] >>= fun info ->
-    header @ [Html5.M.hr ()] @ view_build ~log ~actions ~buildtime ~info ()
-    |> respond_ok ~title:(Printf.sprintf "Build %s on %s" pkg platform)
+    let result, buildtime, log =
+      let open Html5.M in
+      match Status.build_outcome ~platform ~rev:opam_rev pkg with
+      | None ->
+          pcdata "Unknown", "-", []
+      | Some outcome ->
+          let status =
+            match outcome with
+            | Status.Pass -> span ~a:[a_class ["buildok"]] [pcdata "Pass"]
+            | Status.Fail -> span ~a:[a_class ["buildfail"]] [pcdata "FAIL"] in
+          status,
+          Printf.sprintf "Build time: %s seconds" buildtime,
+          view_build ~log ~actions ~info () in
+    let meta =
+      let open Html5.M in
+      [
+        hr ();
+        h1 [pcdata platform];
+        table [
+          tr [ th [pcdata "OPAM repository head"]; td [
+            a ~a:[a_href ("https://github.com/ocaml/opam-repository/commit/" ^ opam_rev_str)] [
+              pcdata opam_rev_str
+            ]
+          ] ];
+          tr [ th [pcdata "Commit date"]; td [pcdata (format_date date)] ];
+          tr [ th [pcdata "Build time"]; td [pcdata buildtime] ];
+          tr [ th [pcdata "Result"]; td [result] ];
+        ];
+        hr ();
+      ] in
+    header @ meta @ log
+    |> respond_ok ~title:(Printf.sprintf "Builds for %s" pkg)
 
   let handle_request ~resources _conn_id request _body =
     Lwt.catch (fun () ->
@@ -287,9 +312,7 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
   let start http resources =
     opam_repo >>= fun opam_repo ->
     revs |> Array.to_list |> Lwt_list.iter_p (fun rev ->
-      let hash = Irmin.Hash.SHA1.of_hum rev in
-      Store.task_of_head (opam_repo "get dates") hash >|= fun task ->
-      Printf.printf "%s -> %Ld\n%!" rev (Irmin.Task.date task);
+      Store.task_of_head (opam_repo "get dates") rev >|= fun task ->
       let date = Irmin.Task.date task |> Int64.to_float |> Unix.gmtime in
       Hashtbl.add date_of_rev rev date
     ) >>= fun () ->
