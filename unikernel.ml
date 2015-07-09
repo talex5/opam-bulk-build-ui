@@ -45,7 +45,7 @@ type build_result = {
   date : Unix.tm;
 }
 
-let failures =
+let successes =
   let hash = Hashtbl.create 1000 in
   Yojson.Basic.(
     from_file "status.json"
@@ -54,14 +54,14 @@ let failures =
         Util.to_assoc rev_info
         |> List.iter (fun (platform, platform_info) ->
             platform_info
-            |> Util.member "err"
+            |> Util.member "ok"
             |> Util.to_list
             |> List.iter (fun pkg ->
                 let key = (Util.to_string pkg, rev) in
-                let failures =
+                let successes =
                   try Hashtbl.find hash key
                   with Not_found -> [] in
-                Hashtbl.replace hash key (platform :: failures)
+                Hashtbl.replace hash key (platform :: successes)
             )
        )
     )
@@ -76,6 +76,8 @@ let platforms = [
   "local-ubuntu-14.04-ocaml-4.02.1", "Ubuntu-14.04 / OCaml 4.02.1";
 ]
 
+let n_platforms = List.length platforms
+
 module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
   (* Split a URI into a list of path segments *)
   let split_path uri =
@@ -88,8 +90,10 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       (aux (Re_str.(split_delim (regexp_string "/") path)))
 
   let count_failures ~rev pkg =
-    try Hashtbl.find failures (pkg, rev) |> List.length
-    with Not_found -> 0
+    try
+      let ok = Hashtbl.find successes (pkg, rev) |> List.length in
+      n_platforms - ok
+    with Not_found -> n_platforms
 
   let view_package_list ~tags () =
     let shown_revs =
@@ -232,11 +236,10 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       let opam_rev = List.hd (Irmin.Task.messages task) |> String.trim in
       let key = (pkg, opam_rev) in
       Printf.printf "key = (%S, %S)\n%!" pkg opam_rev;
-      let failed = try Hashtbl.find failures key with Not_found -> [] in
+      let ok = try Hashtbl.find successes key with Not_found -> [] in
       let date = Hashtbl.find date_of_rev opam_rev in
       platforms |> Array.map (fun (platform, _disp) ->
-        Printf.printf "mem %s in %s\n%!" platform (String.concat ":" failed);
-        { platform; build_commit = hash; success = not (List.mem platform failed); date }
+        { platform; build_commit = hash; success = List.mem platform ok; date }
       )
       |> Lwt.return
     )
