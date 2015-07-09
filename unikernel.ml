@@ -107,15 +107,14 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
             let href = Printf.sprintf "/pkg/%s" pkg in
             let results =
               shown_revs |> List.map (fun rev ->
-                let failures = count_failures ~rev pkg in
-                let cl =
-                  match failures with
-                  | 0 -> ["fullsuccess"]
-                  | 5 -> ["allfail"]
-                  | _ -> ["somesuccess"] in
-                td ~a:[a_class cl] (
-                  if failures = 0 then [] else [pcdata (string_of_int failures)]
-                )
+                let info = Status.pkg_info ~rev pkg in
+                let msg, cl =
+                  match info.Status.pass, info.Status.fail with
+                  | 0, 0 -> "", ["nobuilds"]
+                  | _, 0 -> "", ["fullsuccess"]
+                  | 0, f -> string_of_int f, ["allfail"]
+                  | _, f -> string_of_int f, ["somesuccess"] in
+                td ~a:[a_class cl] [pcdata msg]
               ) in
             Some (tr ~a:[a_class ["clkrow"]; a_onclick (Printf.sprintf "document.location=%S" href)] (
               td [a ~a:[a_href href] [pcdata pkg]] :: results
@@ -143,14 +142,14 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       platforms |> List.mapi (fun i (platform, platform_disp) ->
         let results =
           history |> List.map (fun rev ->
-            let any_failed =
+            let all_failed =
               Array.fold_left (fun acc build ->
-                acc || (build.outcome <> Some Status.Pass)
-              ) false rev in
+                acc && (build.outcome <> Some Status.Pass)
+              ) true rev in
             let cl =
               match rev.(i).outcome with
               | Some (Status.Pass) -> "fullsuccess"
-              | Some (Status.Fail) -> if any_failed then "somesuccess" else "allfail"
+              | Some (Status.Fail) -> if all_failed then "allfail" else "somesuccess"
               | None -> "unknown" in
             let href =
               Printf.sprintf "/pkg/%s/platform/%s/build/%s"
