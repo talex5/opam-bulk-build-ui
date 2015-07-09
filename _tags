@@ -1,0 +1,1 @@
+not (<main.*> or <static1.*>): warn(A), strict_sequence

@@ -1,0 +1,9 @@
+Makefile
+_build/
+bulk-build-www_libvirt.xml
+log
+logs
+main.ml
+main.native
+mir-bulk-build-www
+static1.*
