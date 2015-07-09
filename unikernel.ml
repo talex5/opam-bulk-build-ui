@@ -42,6 +42,7 @@ type build_result = {
   success : bool;
   platform : string;
   build_commit : Irmin.Hash.SHA1.t;
+  date : Unix.tm;
 }
 
 let failures =
@@ -137,8 +138,20 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
 
   let view_package ~pkg ~history () =
     let open Html5.M in
-    [
-      table (platforms |> List.mapi (fun i (platform, platform_disp) ->
+    let header =
+      tr (
+        th [pcdata "Month"; br (); pcdata "Day"] :: (
+        history |> List.rev |> List.map (fun rev ->
+          let date = rev.(0).date in
+          th [
+            pcdata (Printf.sprintf "%02d" (date.Unix.tm_mon + 1));
+            br ();
+            pcdata (Printf.sprintf "%02d" date.Unix.tm_mday);
+          ]
+        ))
+      ) in
+    let rows =
+      platforms |> List.mapi (fun i (platform, platform_disp) ->
         let results =
           history |> List.map (fun rev ->
             let any_failed =
@@ -164,7 +177,9 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
         tr ~a:[a_class ["pkgrow"]] (
           td [a ~a:[a_href href] [pcdata platform_disp]] :: (List.rev results)
         )
-      ))
+      ) in
+    [
+      table (header :: rows)
     ]
 
   let view_build ~log ~actions ~buildtime ~info () =
@@ -218,9 +233,10 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       let key = (pkg, opam_rev) in
       Printf.printf "key = (%S, %S)\n%!" pkg opam_rev;
       let failed = try Hashtbl.find failures key with Not_found -> [] in
+      let date = Hashtbl.find date_of_rev opam_rev in
       platforms |> Array.map (fun (platform, _disp) ->
         Printf.printf "mem %s in %s\n%!" platform (String.concat ":" failed);
-        { platform; build_commit = hash; success = not (List.mem platform failed) }
+        { platform; build_commit = hash; success = not (List.mem platform failed); date }
       )
       |> Lwt.return
     )
