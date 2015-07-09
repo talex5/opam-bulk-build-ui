@@ -61,3 +61,7 @@ pre code { font-size : inherit; }
 
 td a { display: block }
 tr.clkrow:hover { background: yellow; cursor: pointer; }
+
+del { background: #FFECEC; text-decoration: none; }
+ins { background: #EAFFEA; text-decoration: none; }
+ins.unified { background: #FFFFEE; text-decoration: none; }

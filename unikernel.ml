@@ -63,6 +63,55 @@ let platforms = [
 
 let n_platforms = List.length platforms
 
+let re_nl = Str.regexp "\n"
+
+let pre_pcdata lines =
+  let b = Buffer.create 1024 in
+  lines |> List.iter (fun line ->
+    Buffer.add_string b line;
+    Buffer.add_char  b '\n';
+  );
+  Buffer.contents b |> Html5.M.pcdata
+
+let diff prev_log log =
+  let log = Str.split re_nl log |> Array.of_list in
+  let prev_log = Str.split re_nl prev_log |> Array.of_list in
+  let module P = Patience_diff_lib.Patience_diff in
+  let hunks =
+    P.get_hunks
+      ~transform:(fun x -> x)
+      ~compare:String.compare
+      ~context:5
+      ~mine:prev_log
+      ~other:log in
+  let open Html5.M in
+  let next_unshown = ref 1 in
+  hunks |> List.map (fun hunk ->
+    let before_hunk =
+      let b = Buffer.create 1024 in
+      for i = !next_unshown to hunk.P.Hunk.mine_start - 1 do
+        Buffer.add_string b log.(i - 1);
+        Buffer.add_char  b '\n';
+      done;
+      pcdata (Buffer.contents b) in
+    next_unshown := P.Hunk.(hunk.mine_start + hunk.mine_size);
+    pre (before_hunk :: (
+      hunk.P.Hunk.ranges
+      |> List.map (fun range ->
+        match range with
+        | P.Range.Same lines -> lines |> Array.to_list |> List.map fst |> pre_pcdata
+        | P.Range.Old lines -> del [lines |> Array.to_list |> pre_pcdata]
+        | P.Range.New lines -> ins [lines |> Array.to_list |> pre_pcdata]
+        | P.Range.Unified lines -> ins ~a:[a_class ["unified"]] [lines |> Array.to_list |> pre_pcdata]
+        | P.Range.Replace (old_lines, new_lines) ->
+            span [
+              del [old_lines |> Array.to_list |> pre_pcdata];
+              ins [new_lines |> Array.to_list |> pre_pcdata]
+            ]
+      )
+    ))
+  )
+
 module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
   (* Split a URI into a list of path segments *)
   let split_path uri =
@@ -176,15 +225,18 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       table (header :: rows)
     ]
 
-  let view_build ~log ~actions ~info () =
+  let view_build ?prev_log ~log ~actions ~info () =
     let open Html5.M in
+    let log =
+      match prev_log with
+      | None -> [pre [pcdata log]]
+      | Some prev_log -> diff prev_log log in
     [
       pre [pcdata info];
       hr ();
       pre [pcdata actions];
       hr ();
-      pre [pcdata log];
-    ]
+    ] @ log
 
   let respond_ok ~title:t content =
     let open Html5.M in
@@ -211,7 +263,7 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       | `Error (FS.Unknown_key _) -> fail (Failure ("read " ^ name))
       | `Ok bufs -> return (Cstruct.copyv bufs)
 
-  let get_package_history ~depth pkg =
+  let get_package_history ~depth pkg=
     Store.of_tag config task ("pkg-" ^ pkg) >>= fun store ->
     let store = store "get_package_history" in
     Store.history ~depth store >>= fun history ->
@@ -220,7 +272,6 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
     let platforms = Array.of_list platforms in
     history |> Top.iter (fun hash -> hashes := hash :: !hashes);
     !hashes |> Lwt_list.map_s (fun hash ->
-(*       Store.of_head config task hash >>= fun store -> *)
       Store.task_of_head store hash >>= fun task ->
       let opam_rev = List.hd (Irmin.Task.messages task) |> String.trim |> Irmin.Hash.SHA1.of_hum in
       let date = Hashtbl.find date_of_rev opam_rev in
@@ -238,14 +289,24 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
     Store.head store >>= function
     | None -> assert false
     | Some head ->
-    Store.task_of_head store head >>= fun task ->
-    let opam_rev_str = List.hd (Irmin.Task.messages task) |> String.trim in
+    Store.task_of_head store head >>= fun build_task ->
+    let opam_rev_str = List.hd (Irmin.Task.messages build_task) |> String.trim in
     let opam_rev = Irmin.Hash.SHA1.of_hum opam_rev_str in
     let date = Hashtbl.find date_of_rev opam_rev in
     Store.read_exn store [platform; pkg; "log"] >>= fun log ->
     Store.read_exn store [platform; pkg; "actions"] >>= fun actions ->
     Store.read_exn store [platform; pkg; "buildtime"] >>= fun buildtime ->
     Store.read_exn store [platform; pkg; "info"] >>= fun info ->
+    Store.history ~depth:1 store >>= fun history ->
+    let parents = Store.History.pred history head in
+    begin match parents with
+      | [parent] ->
+          Store.of_head config task parent >>= fun parent_store ->
+          let parent_store = parent_store "read parent log" in
+          Store.read_exn parent_store [platform; pkg; "log"] >|= fun prev_log ->
+          Some prev_log
+      | _ -> Lwt.return None
+    end >>= fun prev_log ->
     let result, buildtime, log =
       let open Html5.M in
       match Status.build_outcome ~platform ~rev:opam_rev pkg with
@@ -258,7 +319,7 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
             | Status.Fail -> span ~a:[a_class ["buildfail"]] [pcdata "FAIL"] in
           status,
           Printf.sprintf "Build time: %s seconds" buildtime,
-          view_build ~log ~actions ~info () in
+          view_build ?prev_log ~log ~actions ~info () in
     let meta =
       let open Html5.M in
       [

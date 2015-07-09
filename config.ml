@@ -35,8 +35,8 @@ let stack console =
 
 let main =
   foreign
-    ~libraries:["irmin.unix"; "tyxml"; "str"; "yojson"]
-    ~packages:["irmin"; "tyxml"; "yojson"; "git"]
+    ~libraries:["irmin.unix"; "tyxml"; "str"; "yojson"; "patience_diff"]
+    ~packages:["irmin"; "tyxml"; "yojson"; "git"; "patience_diff"]
     "Unikernel.Main" (http @-> kv_ro @-> job)
 
 let http_srv = http_server (conduit_direct (stack default_console))
