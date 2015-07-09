@@ -79,7 +79,7 @@ let diff prev_log log =
   let module P = Patience_diff_lib.Patience_diff in
   let hunks =
     P.get_hunks
-      ~transform:(fun x -> x)
+      ~transform:String.trim
       ~compare:String.compare
       ~context:5
       ~mine:prev_log
@@ -225,16 +225,16 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       table (header :: rows)
     ]
 
-  let view_build ?prev_log ~log ~actions ~info () =
+  let view_build ?prev ~log ~actions ~info () =
     let open Html5.M in
-    let log =
-      match prev_log with
-      | None -> [pre [pcdata log]]
-      | Some prev_log -> diff prev_log log in
+    let actions, log =
+      match prev with
+      | None -> [pre [pcdata actions]], [pre [pcdata log]]
+      | Some (prev_actions, prev_log) -> diff prev_actions actions, diff prev_log log in
     [
       pre [pcdata info];
-      hr ();
-      pre [pcdata actions];
+      hr ()
+    ] @ actions @ [
       hr ();
     ] @ log
 
@@ -303,10 +303,11 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
       | [parent] ->
           Store.of_head config task parent >>= fun parent_store ->
           let parent_store = parent_store "read parent log" in
+          Store.read_exn parent_store [platform; pkg; "actions"] >>= fun prev_actions ->
           Store.read_exn parent_store [platform; pkg; "log"] >|= fun prev_log ->
-          Some prev_log
+          Some (prev_actions, prev_log)
       | _ -> Lwt.return None
-    end >>= fun prev_log ->
+    end >>= fun prev ->
     let result, buildtime, log =
       let open Html5.M in
       match Status.build_outcome ~platform ~rev:opam_rev pkg with
@@ -319,7 +320,7 @@ module Main (S:Cohttp_lwt.Server) (FS:KV_RO) = struct
             | Status.Fail -> span ~a:[a_class ["buildfail"]] [pcdata "FAIL"] in
           status,
           Printf.sprintf "Build time: %s seconds" buildtime,
-          view_build ?prev_log ~log ~actions ~info () in
+          view_build ?prev ~log ~actions ~info () in
     let meta =
       let open Html5.M in
       [
