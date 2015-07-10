@@ -6,7 +6,7 @@ open Mirage
 let net =
   match get_mode () with
   | `Xen -> `Direct
-  | `Unix ->
+  | `Unix | `MacOSX ->
       try match Sys.getenv "NET" with
         | "direct" -> `Direct
         | "socket" -> `Socket

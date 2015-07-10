@@ -1,1 +1,1 @@
-not (<main.*> or <static1.*>): warn(A), strict_sequence
+not (<main.*> or <static1.*>): warn(A), strict_sequence, warn_error(A)
