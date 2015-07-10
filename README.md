@@ -4,6 +4,21 @@ OPAM Bulk Build UI Prototype
 Copyright Thomas Leonard, 2015
 
 
+** This is an early prototype, and very buggy. **
+
+Installation
+------------
+
+In the source directory:
+
+    git clone --mirror https://github.com/talex5/opam-bulk-build-logs.git logs
+    git clone https://github.com/ocaml/opam-repository.git
+    opam install mirage
+    mirage configure --unix
+    make
+    ./mir-bulk-build-www
+
+
 CONDITIONS
 ----------
 

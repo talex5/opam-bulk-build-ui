@@ -1,6 +1,0 @@
-[submodule "opam-repository"]
-	path = opam-repository
-	url = https://github.com/ocaml/opam-repository.git
-[submodule "logs"]
-	path = logs
-	url = https://github.com/talex5/opam-bulk-build-logs.git
