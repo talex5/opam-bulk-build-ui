@@ -11,7 +11,8 @@ Installation
 
 In the source directory:
 
-    git clone --mirror https://github.com/talex5/opam-bulk-build-logs.git logs
+    mkdir logs
+    git clone --mirror https://github.com/talex5/opam-bulk-build-logs.git logs/.git
     git clone https://github.com/ocaml/opam-repository.git
     opam install mirage
     mirage configure --unix
